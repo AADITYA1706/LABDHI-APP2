@@ -1,5 +1,5 @@
 const express = require("express");
-const axios = require("axios");
+const cams = require("../services/cams");
 
 const router = express.Router();
 
@@ -10,33 +10,27 @@ const router = express.Router();
 
 router.post("/fetch", async (req, res) => {
   try {
-    const { sessionId, consentId, token } = req.body;
+    const { sessionId, consentId, token, txnId } = req.body;
 
-    if (!sessionId || !consentId || !token) {
+    if (!sessionId || !consentId || !token || !txnId) {
       return res.status(400).json({
         success: false,
-        message: "sessionId, consentId and token are required",
+        message: "sessionId, consentId, token and txnId are required",
       });
     }
 
-    const response = await axios.post(
-      `${process.env.CAMS_BASE_URL}/api/fidata/GetConsentData`,
-      {
-        sessionId,
-        consentId,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    const [consentData, periodicData] = await Promise.all([
+      cams.getConsentData({ token, consentId }),
+      cams.fetchPeriodicData({ token, sessionId, txnId, consentId }),
+    ]);
 
     return res.status(200).json({
       success: true,
       message: "FI Data fetched successfully",
-      portfolio: response.data,
+      portfolio: {
+        ...cams.readPortfolio(consentData),
+        periodicData: cams.readPortfolio(periodicData),
+      },
     });
 
   } catch (err) {

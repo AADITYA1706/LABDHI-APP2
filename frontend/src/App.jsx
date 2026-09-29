@@ -7,7 +7,7 @@ import {
 } from "react-router-dom";
 
 import EmployeeLogin from "./pages/EmployeeLogin";
-import Signup from "./pages/signup";
+import Signup from "./pages/Signup";
 import Login from "./pages/login";
 import Cams from "./pages/Cams";
 import Otp from "./pages/otp";
@@ -34,11 +34,10 @@ function EmployeeProtected({ children }) {
    Consent Protection
 ========================= */
 function ConsentProtected({ children }) {
-  const consent =
-    localStorage.getItem("consentId") ||
-    localStorage.getItem("camsConsent");
+  const consentId = localStorage.getItem("consentId");
+  const consentActive = localStorage.getItem("camsConsent") === "true";
 
-  if (!consent) {
+  if (!consentId || !consentActive) {
     return <Navigate to="/cams" replace />;
   }
 

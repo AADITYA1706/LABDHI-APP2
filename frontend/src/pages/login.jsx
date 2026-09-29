@@ -14,7 +14,10 @@ export default function Login() {
     e.preventDefault();
     setError("");
 
-    if (!username || !password) {
+    const trimmedUsername = username.trim();
+    const trimmedPassword = password.trim();
+
+    if (!trimmedUsername || !trimmedPassword) {
       setError("Please enter CAMS username and password");
       return;
     }
@@ -23,8 +26,8 @@ export default function Login() {
       setLoading(true);
 
       const { data } = await axios.post("/api/auth/login", {
-        username: username.trim(),
-        password,
+        username: trimmedUsername,
+        password: trimmedPassword,
       });
 
       if (!data.success) {

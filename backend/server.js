@@ -1,51 +1,44 @@
 const express = require("express");
 const cors = require("cors");
-const path = require("path");
 const dotenv = require("dotenv");
+const path = require("path");
 
-// Load .env from backend folder
-dotenv.config({
-  path: path.join(__dirname, ".env"),
-});
+// Load Environment Variables
+dotenv.config({ path: path.join(__dirname, ".env") });
 
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// Routes
 const employeeRoutes = require("./routes/employee");
 const authRoutes = require("./routes/auth");
 const camsRoutes = require("./routes/cams");
 const consentRoutes = require("./routes/consent");
 const fetchRoutes = require("./routes/fetch");
+const webhookRoutes = require("./routes/webhook");
+const insuranceRoutes = require("./routes/insurance");
 
-const app = express();
-const PORT = process.env.PORT || 5000;
-
-/* ======================================
-   MIDDLEWARE
-====================================== */
-
+// Middleware
+app.use(cors());
+app.use(express.json());
 app.use(
-  cors({
-    origin: true,
-    credentials: true,
+  express.urlencoded({
+    extended: true,
+    verify: (req, res, buffer) => {
+      req.rawBody = buffer.toString("utf8");
+    },
   })
 );
 
-app.use(express.json());
-
-/* ======================================
-   HOME
-====================================== */
-
+// Home
 app.get("/", (req, res) => {
   res.json({
     success: true,
     message: "Labdhi Banking Backend Running",
-    port: PORT,
   });
 });
 
-/* ======================================
-   HEALTH CHECK
-====================================== */
-
+// Health Check
 app.get("/api/test", (req, res) => {
   res.json({
     success: true,
@@ -53,32 +46,25 @@ app.get("/api/test", (req, res) => {
   });
 });
 
-/* ======================================
-   API ROUTES
-====================================== */
-
+// API Routes
 app.use("/api/employee", employeeRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/cams", camsRoutes);
-app.use("/api/cams", consentRoutes);
-app.use("/api/cams", fetchRoutes);
+app.use("/api/consent", consentRoutes);
+app.use("/api/fetch", fetchRoutes);
+app.use("/webhook", webhookRoutes);
+app.use("/api/insurance", insuranceRoutes);
 
-/* ======================================
-   404 HANDLER
-====================================== */
-
+// 404
 app.use((req, res) => {
   res.status(404).json({
     success: false,
-    message: "API Route Not Found",
+    message: "Route Not Found",
     path: req.originalUrl,
   });
 });
 
-/* ======================================
-   START SERVER
-====================================== */
-
+// Start Server
 app.listen(PORT, () => {
-  console.log(`🚀 Backend running on http://localhost:${PORT}`);
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });

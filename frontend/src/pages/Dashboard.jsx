@@ -14,6 +14,7 @@ export default function Dashboard() {
 
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
+  const [error, setError] = useState("");
 
   const fullname = localStorage.getItem("fullname") || "Employee";
 
@@ -30,6 +31,14 @@ export default function Dashboard() {
             localStorage.getItem("consentId") ||
             camsData.consentId ||
             "",
+          token:
+            localStorage.getItem("camsToken") ||
+            camsData.token ||
+            "",
+          txnId:
+            localStorage.getItem("txnId") ||
+            camsData.txnId ||
+            "",
           aaCustomerHandleId:
             camsData.aaCustomerHandleId || "",
           aaCustomerMobile:
@@ -37,7 +46,7 @@ export default function Dashboard() {
         };
 
         const res = await axios.post(
-          "http://localhost:5000/api/auth/dashboard-data",
+          "/api/auth/dashboard-data",
           payload
         );
 
@@ -50,7 +59,10 @@ export default function Dashboard() {
           insurance: api.insurance || [],
         });
       } catch (err) {
-        console.log(err);
+        setError(
+          err.response?.data?.message ||
+            "Unable to load CAMS dashboard data"
+        );
       } finally {
         setLoading(false);
       }
@@ -69,27 +81,36 @@ export default function Dashboard() {
       const token = localStorage.getItem("camsToken");
 
       const res = await axios.post(
-        "http://localhost:5000/api/cams/status",
+        "/api/cams/status",
         {
           sessionId,
           consentHandle,
           token,
+          txnId: localStorage.getItem("txnId"),
+          userId: localStorage.getItem("employeeEmail"),
         }
       );
 
-      if (res.data.success) {
+      if (res.data.success && res.data.consentStatus === "ACTIVE" && res.data.consentId) {
         localStorage.setItem(
           "consentId",
           res.data.consentId
         );
+        localStorage.setItem("sessionId", res.data.sessionId || sessionId);
+        localStorage.setItem("txnId", res.data.txnId || localStorage.getItem("txnId") || "");
 
         navigate("/banking");
       } else {
-        alert("Consent not approved yet.");
+        setError(
+          res.data.message ||
+            `Consent status: ${res.data.consentStatus || "PENDING"}`
+        );
       }
     } catch (err) {
-      console.log(err);
-      alert("Unable to verify consent.");
+      setError(
+        err.response?.data?.message ||
+          "Unable to verify consent"
+      );
     } finally {
       setChecking(false);
     }
@@ -109,6 +130,20 @@ export default function Dashboard() {
       <div className="page-stack">
         <div className="loading-box">
           Loading Dashboard...
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="page-stack">
+        <div className="loading-box">
+          <strong>Dashboard unavailable</strong>
+          <p>{error}</p>
+          <button className="btn" onClick={() => window.location.reload()}>
+            Retry
+          </button>
         </div>
       </div>
     );

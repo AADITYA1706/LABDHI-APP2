@@ -13,13 +13,15 @@ export default function Banking() {
         const sessionId = localStorage.getItem("sessionId");
         const consentId = localStorage.getItem("consentId");
         const token = localStorage.getItem("camsToken");
+        const txnId = localStorage.getItem("txnId");
 
         const res = await axios.post(
-          "http://localhost:5000/api/cams/fetch",
+          "/api/cams/fetch",
           {
             sessionId,
             consentId,
             token,
+            txnId,
           }
         );
 
