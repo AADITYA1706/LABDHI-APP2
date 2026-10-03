@@ -10,39 +10,29 @@ const router = express.Router();
 
 router.post("/fetch", async (req, res) => {
   try {
-    const { sessionId, consentId, token, txnId } = req.body;
+    const { sessionId, consentId } = req.body;
 
-    if (!sessionId || !consentId || !token || !txnId) {
+    if (!sessionId || !consentId) {
       return res.status(400).json({
         success: false,
-        message: "sessionId, consentId, token and txnId are required",
+        message: "sessionId and consentId are required",
       });
     }
 
-    const [consentData, periodicData] = await Promise.all([
-      cams.getConsentData({ token, consentId }),
-      cams.fetchPeriodicData({ token, sessionId, txnId, consentId }),
-    ]);
+    const result = await cams.fetchActiveConsentData({ sessionId, consentId });
 
     return res.status(200).json({
       success: true,
-      message: "FI Data fetched successfully",
-      portfolio: {
-        ...cams.readPortfolio(consentData),
-        periodicData: cams.readPortfolio(periodicData),
-      },
+      consentId: result.consentId,
+      portfolio: result.portfolio,
     });
 
   } catch (err) {
-    console.error("========== FETCH FI DATA ERROR ==========");
-    console.error(err.response?.data || err.message);
+    console.error("FETCH FI DATA ERROR", err.message);
 
-    return res.status(500).json({
+    return res.status(err.statusCode || err.response?.status || 502).json({
       success: false,
-      message:
-        err.response?.data?.message ||
-        err.message ||
-        "Unable to fetch FI Data",
+      message: err.response?.data?.message || err.message || "Unable to fetch FI Data",
     });
   }
 });

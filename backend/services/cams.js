@@ -320,7 +320,18 @@ const mapDashboardData = (consentData, periodicData) => {
     [consentData, periodicData],
     ["accounts", "bankAccounts", "accountDetails", "accountList", "depositAccounts"]
   );
-  const accounts = (listedAccounts.length ? listedAccounts : consentAccounts).map(
+  const accountEntries = listedAccounts.length
+    ? listedAccounts.map((entry) => ({
+        wrapper: entry,
+        account:
+          entry?.dataDetail?.jsonData?.Account ||
+          entry?.dataDetail?.jsonData?.account ||
+          entry?.jsonData?.Account ||
+          entry?.Account ||
+          entry,
+      }))
+    : consentAccounts;
+  const accounts = accountEntries.map(
     ({ wrapper, account }) => ({
       bankName:
         findFieldValue(wrapper, ["bankName", "bank", "fipName", "fipid", "institutionName"]) ||
@@ -915,6 +926,72 @@ const fetchPeriodicData = async ({ token, sessionId, consentId }) => {
   return response;
 };
 
+const fetchActiveConsentData = async ({ sessionId, consentId }) => {
+  const session = getRedirectSession(sessionId);
+  if (!session) {
+    const error = new Error("CAMS session expired; start a new consent request");
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const authenticationResponse = await authenticate();
+  const authentication = readAuthentication(authenticationResponse);
+  if (!authentication.token) {
+    throw new Error("CAMS authentication did not return an access token");
+  }
+
+  const statusResponse = await getConsentStatus({
+    token: authentication.token,
+    sessionId: session.sessionId,
+    consentHandle: session.consentHandle,
+    txnId: session.txnId,
+  });
+  const status = readConsentStatus(statusResponse);
+  const notification = findConsentRecordBySessionId(sessionId);
+  const notificationIsActive =
+    isConsentStatusActive(notification?.consentStatus) && Boolean(notification?.consentId);
+  const active = isConsentStatusActive(status.consentStatus) || notificationIsActive;
+  const activeConsentId = status.consentId || (notificationIsActive ? notification.consentId : "");
+
+  if (!active || !activeConsentId) {
+    const error = new Error("CAMS consent is not active; data was not requested");
+    error.statusCode = 409;
+    throw error;
+  }
+  if (consentId !== activeConsentId) {
+    const error = new Error("Consent ID does not match the active CAMS consent");
+    error.statusCode = 409;
+    throw error;
+  }
+
+  const [consentResponse, periodicResponse] = await Promise.all([
+    getConsentData({ token: authentication.token, consentId: activeConsentId }),
+    fetchPeriodicData({
+      token: authentication.token,
+      sessionId: session.sessionId,
+      consentId: activeConsentId,
+    }),
+  ]);
+  const portfolio = mapDashboardData(
+    readPortfolio(consentResponse),
+    readPortfolio(periodicResponse)
+  );
+
+  saveConsentRecord({
+    ...notification,
+    sessionId,
+    consentId: activeConsentId,
+    consentHandle: session.consentHandle,
+    txnId: session.txnId,
+    token: authentication.token,
+    consentStatus: "ACTIVE",
+    consentData: portfolio,
+    consentDataFetchedAt: new Date().toISOString(),
+  });
+
+  return { consentId: activeConsentId, portfolio };
+};
+
 module.exports = {
   redactSecrets,
   getBaseUrl,
@@ -931,6 +1008,7 @@ module.exports = {
   getConsentStatus,
   getConsentData,
   fetchPeriodicData,
+  fetchActiveConsentData,
   rememberRedirectSession,
   getRedirectSession,
   findRedirectSession,

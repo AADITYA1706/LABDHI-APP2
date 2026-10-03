@@ -30,7 +30,7 @@ const getCamsSession = (body) => {
   return {
     sessionId,
     consentHandle: savedSession?.consentHandle || body?.consentHandle,
-    token: body?.token || savedSession?.token,
+    token: savedSession?.token,
     txnId: savedSession?.txnId || body?.txnId,
     mobile: savedSession?.mobile,
   };

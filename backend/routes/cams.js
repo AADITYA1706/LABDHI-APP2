@@ -242,17 +242,7 @@ router.post("/callback", async (req, res) => {
       txnIdPresent: Boolean(body.txnId || mapped?.txnId),
     };
     const inMemorySession = cams.getRedirectSession(sessionId);
-    const suppliedSession =
-      body.sessionId && body.token && body.consentHandle && body.txnId
-        ? {
-            sessionId: body.sessionId,
-            token: body.token,
-            consentHandle: body.consentHandle,
-            txnId: body.txnId,
-            clientTxnId,
-          }
-        : null;
-    const saved = inMemorySession || mapped || suppliedSession;
+    const saved = inMemorySession || mapped;
     callbackDiagnostics.sessionFound = Boolean(saved);
 
     if (!saved) {
@@ -356,45 +346,28 @@ router.post("/callback", async (req, res) => {
 ===================================================== */
 router.post("/fetch", async (req, res) => {
   try {
-    const { sessionId, consentId, token, txnId } = req.body;
-    const saved = sessionId ? cams.getRedirectSession(sessionId) : null;
-    const resolvedToken = saved?.token || token;
+    const { sessionId, consentId } = req.body;
 
-    if (!sessionId || !consentId || !resolvedToken || !txnId) {
+    if (!sessionId || !consentId) {
       return res.status(400).json({
         success: false,
-        message: "Missing required fields",
+        message: "sessionId and consentId are required",
       });
     }
 
-    const [consentData, periodicData] = await Promise.all([
-      cams.getConsentData({ token: resolvedToken, consentId }),
-      cams.fetchPeriodicData({
-        token: resolvedToken,
-        sessionId,
-        txnId,
-        consentId,
-      }),
-    ]);
+    const result = await cams.fetchActiveConsentData({ sessionId, consentId });
 
     return res.status(200).json({
       success: true,
-      portfolio: {
-        ...cams.readPortfolio(consentData),
-        periodicData: cams.readPortfolio(periodicData),
-      },
+      consentId: result.consentId,
+      portfolio: result.portfolio,
     });
   } catch (err) {
-    console.error("FETCH ERROR");
-    console.error(
-      err.response?.data
-        ? cams.redactSecrets(err.response.data)
-        : err.message
-    );
+    console.error("FETCH ERROR", err.message);
 
-    return res.status(502).json({
+    return res.status(err.statusCode || err.response?.status || 502).json({
       success: false,
-      message: err.message,
+      message: err.response?.data?.message || err.message,
     });
   }
 });
@@ -456,7 +429,7 @@ router.post("/status", async (req, res) => {
     }
 
     const response = await cams.getConsentStatus({
-      token: saved.token || req.body.token,
+      token: saved.token,
       sessionId: saved.sessionId,
       consentHandle: req.body.consentHandle || saved.consentHandle,
       txnId: req.body.txnId || saved.txnId,

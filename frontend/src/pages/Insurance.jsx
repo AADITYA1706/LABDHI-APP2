@@ -3,6 +3,9 @@ import axios from "axios";
 
 export default function Insurance() {
   const [policies, setPolicies] = useState([]);
+  const [supported, setSupported] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -11,11 +14,18 @@ export default function Insurance() {
       .get("/api/insurance")
       .then((res) => {
         if (active) {
+          setSupported(res.data?.supported === true);
           setPolicies(Array.isArray(res.data?.policies) ? res.data.policies : []);
         }
       })
       .catch((err) => {
-        console.log(err);
+        console.error(err);
+        if (active) {
+          setError(err.response?.data?.message || "Unable to check insurance API availability.");
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
       });
 
     return () => {
@@ -24,8 +34,16 @@ export default function Insurance() {
   }, []);
 
   return (
-    <div style={{ padding: "30px", fontFamily: "Arial" }}>
+    <div style={{ padding: "30px" }}>
       <h1>Insurance Policies</h1>
+
+      {loading && <p role="status">Loading insurance data...</p>}
+      {error && <p role="alert">{error}</p>}
+      {!loading && !error && !supported && (
+        <p role="status">
+          Insurance data is not supported by the configured CAMS API.
+        </p>
+      )}
 
       {policies.map((p, i) => (
         <div

@@ -10,21 +10,21 @@ const router = express.Router();
 
 router.post("/status", async (req, res) => {
   try {
-    const { sessionId, consentHandle, token, txnId, userId } = req.body;
+    const { sessionId } = req.body;
+    const saved = cams.getRedirectSession(sessionId);
 
-    if (!sessionId || !consentHandle || !token) {
+    if (!saved) {
       return res.status(400).json({
         success: false,
-        message: "sessionId, consentHandle and token are required",
+        message: "CAMS session is missing or expired",
       });
     }
 
     const response = await cams.getConsentStatus({
-      token,
-      sessionId,
-      consentHandle,
-      txnId,
-      userId,
+      token: saved.token,
+      sessionId: saved.sessionId,
+      consentHandle: saved.consentHandle,
+      txnId: saved.txnId,
     });
 
     const consent = cams.readConsentStatus(response);
@@ -33,8 +33,8 @@ router.post("/status", async (req, res) => {
       success: true,
       consentStatus: consent.consentStatus,
       consentId: consent.consentId,
-      consentHandle,
-      sessionId,
+      consentHandle: saved.consentHandle,
+      sessionId: saved.sessionId,
       data: cams.readPayload(response),
     });
 
