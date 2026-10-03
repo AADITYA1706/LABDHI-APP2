@@ -1,0 +1,29 @@
+$kind: http-request
+url: https://uatapp.finduit.in/api/FIU/RedirectAA
+method: POST
+body:
+  type: json
+  content: "{\r
+
+    \    \"clienttrnxid\": \"eab72c91-be13-49e5-817e-d948406393c8\",\r
+
+    \    \"fiuID\": \"Labdhi_UAT\",\r
+
+    \    \"userId\": \"kunalr@labdhi.in\",\r
+
+    \    \"aaCustomerHandleId\": \"9940353097@CAMSAA\",\r
+
+    \    \"aaCustomerMobile\": \"9940353097\",\r
+
+    \    \"sessionId\": \"23db7c45-5bc1-48c1-905a-76e9be8ff10b\",\r
+
+    \    \"useCaseid\": \"1656\",\r
+
+    \    \"fipid\": \"\"\r
+
+    \    }"
+auth:
+  type: bearer
+  credentials:
+    token: '{{json_web_token_0opu}}'
+order: 2000

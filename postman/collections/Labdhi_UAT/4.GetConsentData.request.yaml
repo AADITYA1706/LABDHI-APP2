@@ -1,0 +1,17 @@
+$kind: http-request
+url: https://uatapp.finduit.in/api/fidata/GetConsentData
+method: POST
+body:
+  type: json
+  content: "{\r
+
+    \    \"consentId\": \"a9f307d5-39ba-4347-b1de-c1d6c4817611\",\r
+
+    \    \"fiuID\": \"Labdhi_UAT\"\r
+
+    }"
+auth:
+  type: bearer
+  credentials:
+    token: "{{auth_secret_0cj9}}"
+order: 3000

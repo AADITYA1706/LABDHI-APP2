@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
+import {
+  isCamsConsentActive,
+  normalizeCamsConsentStatus,
+  normalizeConsentHandle,
+} from "./camsStatus.js";
 
 const CAMS_STATUS_POLL_MS = 3000;
 const CAMS_COMPLETION_TIMEOUT_MS = 14 * 60 * 1000;
@@ -83,10 +88,16 @@ export default function Cams() {
   };
 
   const saveActiveConsent = (result, saved) => {
-    localStorage.setItem("consentId", result.consentId || "");
-    localStorage.setItem("consentHandle", result.consentHandle || saved.consentHandle || "");
-    localStorage.setItem("sessionId", result.sessionId || saved.sessionId || "");
-    localStorage.setItem("txnId", result.txnId || saved.txnId || "");
+    const portfolio = result.portfolio || result.data?.portfolio;
+    const consentId = result.consentId || result.data?.consentId || "";
+
+    if (portfolio && typeof portfolio === "object") {
+      localStorage.setItem("camsPortfolio", JSON.stringify(portfolio));
+    }
+    localStorage.setItem("consentHandle", result.consentHandle || result.data?.consentHandle || saved.consentHandle || "");
+    localStorage.setItem("sessionId", result.sessionId || result.data?.sessionId || saved.sessionId || "");
+    localStorage.setItem("txnId", result.txnId || result.data?.txnId || saved.txnId || "");
+    localStorage.setItem("consentId", consentId);
     localStorage.setItem("camsConsent", "true");
   };
 
@@ -95,7 +106,7 @@ export default function Cams() {
 
     const redirecturl = `${window.location.origin}/cams`;
     const response = await axios.post(
-      "http://localhost:5000/api/cams/redirect",
+      "/api/cams/redirect",
       {
         aaCustomerMobile: customerMobile,
         redirecturl,
@@ -112,7 +123,6 @@ export default function Cams() {
     localStorage.setItem(
       "camsData",
       JSON.stringify({
-        token: response.data.token,
         sessionId: response.data.sessionId,
         consentHandle: response.data.consentHandle,
         txnId: response.data.txnId,
@@ -164,86 +174,15 @@ export default function Cams() {
       return;
     }
 
-    const completeCallback = async () => {
-      try {
-        setLoading(true);
-        setError("");
-
-        const saved = JSON.parse(
-          localStorage.getItem("camsData") || "{}"
-        );
-
-        console.info("[CAMS CALLBACK REQUEST]", {
-          callbackCalled: true,
-          ecresReceived: Boolean(ecres),
-          resdateReceived: Boolean(resdate),
-          clientTxnIdReceived: Boolean(clienttxnid || saved.clienttxnid),
-        });
-
-        const statusResponse = await axios.post("/api/cams/status", {
-          sessionId: saved.sessionId,
-          consentHandle: saved.consentHandle,
-          token: saved.token,
-          txnId: saved.txnId,
-        });
-
-        if (
-          !statusResponse.data.success ||
-          statusResponse.data.consentStatus !== "ACTIVE" ||
-          !statusResponse.data.consentId
-        ) {
-          throw new Error(
-            statusResponse.data.message || "Consent is not active"
-          );
-        }
-        if (!statusResponse.data.consentId) {
-          throw new Error("Active consent ID was not returned");
-        }
-        saveActiveConsent(statusResponse.data, saved);
-        sessionStorage.removeItem("camsRedirectRetry");
-
-        if (window.opener && !window.opener.closed) {
-          console.info("[CAMS POPUP DIAGNOSTIC] callback complete; closing popup");
-          window.close();
-          return;
-        }
-
-          navigate("/dashboard", { replace: true });
-      } catch (err) {
-        if (err.response) {
-          let savedClientTxnIdPresent = Boolean(clienttxnid);
-          try {
-            savedClientTxnIdPresent ||= Boolean(
-              JSON.parse(localStorage.getItem("camsData") || "{}").clienttxnid
-            );
-          } catch {
-            savedClientTxnIdPresent = false;
-          }
-
-          console.info("[CAMS CALLBACK DIAGNOSTIC]", {
-            callbackCalled: true,
-            ecresReceived: Boolean(ecres),
-            resdateReceived: Boolean(resdate),
-            clientTxnIdReceived: savedClientTxnIdPresent,
-            callbackResponseStatus: err.response.status,
-            callbackSuccess: Boolean(err.response.data?.success),
-            callbackConsentStatus: err.response.data?.consentStatus || null,
-            portfolioFetched: err.response.data?.portfolioFetched === true,
-            finalNavigationTarget: "not navigated",
-          });
-        }
-
-        setError(
-          err.response?.data?.message ||
-            err.message ||
-            "Unable to complete CAMS callback"
-        );
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    completeCallback();
+    console.info("[CAMS CALLBACK NAVIGATION]", {
+      sessionIdPresent: Boolean(
+        JSON.parse(localStorage.getItem("camsData") || "{}").sessionId
+      ),
+      callbackParametersPresent: true,
+      navigationTarget: "/dashboard",
+    });
+    sessionStorage.removeItem("camsRedirectRetry");
+    navigate("/dashboard", { replace: true });
   }, [
     ecres,
     resdate,
@@ -271,6 +210,13 @@ export default function Cams() {
       stopped = true;
       stopPolling();
       setJourneyActive(false);
+      console.info("[CAMS TEMP DEBUG] dashboard navigation", {
+        sessionIdPresent: Boolean(localStorage.getItem("sessionId")),
+        consentIdPresent: Boolean(localStorage.getItem("consentId")),
+        consentFlagActive: localStorage.getItem("camsConsent") === "true",
+        navigationCondition: "status ACTIVE and consentId present",
+        navigateToDashboard: true,
+      });
       console.info("[CAMS COMPLETION CONDITIONS]", {
         consentIdExists: Boolean(localStorage.getItem("consentId")),
         camsConsentExists: localStorage.getItem("camsConsent") === "true",
@@ -285,12 +231,6 @@ export default function Cams() {
       console.info("[NAVIGATING TO DASHBOARD]");
       navigate("/dashboard", { replace: true });
       console.info("navigate('/dashboard') executed");
-    };
-
-    let processPopupCallback;
-
-    processPopupCallback = () => {
-      if (!stopped) void pollConsentStatus();
     };
 
     const pollConsentStatus = async () => {
@@ -312,47 +252,80 @@ export default function Cams() {
       logCamsPopupState("status poll started");
       try {
         const saved = JSON.parse(localStorage.getItem("camsData") || "{}");
-        if (
-          !saved.sessionId ||
-          !saved.clienttxnid ||
-          !saved.consentHandle ||
-          !saved.txnId
-        ) {
+        if (!saved.sessionId || !saved.clienttxnid) {
+          console.info("[CAMS TEMP DEBUG] status navigation blocked: session data missing", {
+            sessionIdPresent: Boolean(saved.sessionId),
+            clientTxnIdPresent: Boolean(saved.clienttxnid),
+            consentHandlePresent: Boolean(saved.consentHandle),
+            txnIdPresent: Boolean(saved.txnId),
+            navigateToDashboard: false,
+          });
           return;
         }
 
         statusPollController = new AbortController();
+        const pollConsentHandle = normalizeConsentHandle(saved.consentHandle || "");
         const statusResponse = await axios.post(
           "/api/cams/status",
           {
             sessionId: saved.sessionId,
-            consentHandle: saved.consentHandle,
-            token: saved.token,
-            txnId: saved.txnId,
+            consentHandle: pollConsentHandle,
+            txnId: saved.txnId || "",
           },
           { signal: statusPollController.signal }
         );
         statusPollController = null;
+        const responseData = statusResponse.data || {};
+        const normalizedStatus = normalizeCamsConsentStatus(responseData);
+        const consentStatusValue = normalizedStatus || normalizeCamsConsentStatus(responseData.consentStatus || responseData.data?.consentStatus);
+        const consentId = responseData.consentId || responseData.data?.consentId || "";
+        const consentStatusIsActive = isCamsConsentActive(responseData, consentId);
+        const consentIdPresent = Boolean(consentId);
+        const statusCanNavigate = consentStatusIsActive && consentIdPresent;
+        console.info("[CAMS TEMP DEBUG] status navigation condition", {
+          statusResponseStatus: statusResponse.status,
+          sessionIdPresent: Boolean(saved.sessionId),
+          consentStatus: consentStatusValue || null,
+          consentStatusIsActive,
+          consentIdPresent,
+          navigateToDashboard: statusCanNavigate,
+        });
         console.info("[CAMS STATUS RESPONSE]", {
           httpStatus: statusResponse.status,
-          consentStatus: statusResponse.data.consentStatus,
-          consentIdExists: Boolean(statusResponse.data.consentId),
+          consentStatus: consentStatusValue || null,
+          consentIdExists: consentIdPresent,
         });
-        console.info(`[POLL RESPONSE] status=${statusResponse.data.consentStatus || "unknown"}`);
+        console.info("[CONSENT STATUS]", {
+          consentStatus: consentStatusValue || "unknown",
+          consentIdPresent,
+        });
+        console.info(`[POLL RESPONSE] status=${consentStatusValue || "unknown"}`);
         logCamsPopupState("status response");
 
         if (stopped) return;
-        if (
-          statusResponse.data.consentStatus !== "ACTIVE" ||
-          !statusResponse.data.consentId
-        ) {
+        if (!statusCanNavigate) {
           return;
         }
 
-        saveActiveConsent(statusResponse.data, saved);
+        console.info("[CAMS COMPLETED]");
+          saveActiveConsent(statusResponse.data, saved);
         setError("");
         navigateAfterCompletion();
       } catch (completionError) {
+        if (completionError.response?.status === 409) {
+          stopped = true;
+          stopPolling();
+          setJourneyActive(false);
+          if (camsWindowRef.current && !camsWindowRef.current.closed) {
+            camsWindowRef.current.close();
+          }
+          setError(
+            completionError.response.data?.message ||
+              "CAMS session expired. Start a new consent request."
+          );
+          return;
+        }
+
         if (completionError.code !== "ERR_CANCELED") {
           console.info(
             `[POLL RESPONSE] status=HTTP_ERROR_${completionError.response?.status || "unknown"}`
@@ -387,8 +360,12 @@ export default function Cams() {
         return;
       }
 
-      console.info("[CAMS COMPLETED]");
-      void processPopupCallback();
+      console.info("[CAMS CALLBACK RECEIVED]", {
+        sessionIdPresent: Boolean(localStorage.getItem("sessionId")),
+        callbackMessageValidated: true,
+        checkingConsentBeforeNavigation: true,
+      });
+      void pollConsentStatus();
     };
 
     pollTimer = window.setInterval(

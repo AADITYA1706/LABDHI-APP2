@@ -1,0 +1,21 @@
+$kind: http-request
+url: https://uatapp.finduit.in/api/FIU/Authentication
+method: POST
+body:
+  type: json
+  content: "{\r
+
+    \    \"fiuID\":\"Labdhi_UAT\",\r
+
+    \    \"redirection_key\":\"yTRPtpvRmZzkGp\",\r
+
+    \    \"userId\":\"kunalr@labdhi.in\"\r
+
+    }\r
+
+    \ "
+auth:
+  type: bearer
+  credentials:
+    token: "{{auth_secret_1a5k}}"
+order: 1000

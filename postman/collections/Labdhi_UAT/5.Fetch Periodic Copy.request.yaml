@@ -1,0 +1,21 @@
+$kind: http-request
+url: https://uatapp.finduit.in/api/FIData/v2/FetchPeriodicData
+method: POST
+headers:
+  Authorization: Bearer {{json_web_token_0nos}}
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+        "sessionId": "ce2f7bd1-a3b2-4b08-b733-23feb4fde87e",
+        "txnId": "2ea97ded-bd65-4957-a485-31a6baf2cf00",
+        "consentId": "bf1e5349-58fb-4860-b639-b0cf46f25d81",
+        "fiuID": "Labdhi_UAT"
+        
+    }
+auth:
+  type: bearer
+  credentials:
+    token: "{{auth_secret_0cj9}}"
+order: 4000

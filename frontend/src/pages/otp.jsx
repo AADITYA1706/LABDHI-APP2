@@ -25,7 +25,6 @@ export default function Otp() {
         {
           sessionId: camsData.sessionId,
           consentHandle: camsData.consentHandle,
-          token: camsData.token,
           txnId: camsData.txnId || localStorage.getItem("txnId"),
           userId: camsData.userId || localStorage.getItem("employeeEmail"),
           otp,
@@ -36,7 +35,6 @@ export default function Otp() {
       const pollPayload = {
         sessionId: camsData.sessionId,
         consentHandle: camsData.consentHandle,
-        token: camsData.token,
         txnId: camsData.txnId || localStorage.getItem("txnId"),
         userId: camsData.userId || localStorage.getItem("employeeEmail"),
       };
@@ -58,7 +56,6 @@ export default function Otp() {
 
       // Keep Session
       localStorage.setItem("sessionId", camsData.sessionId);
-      localStorage.setItem("camsToken", camsData.token);
       localStorage.setItem("txnId", pollPayload.txnId || "");
 
       navigate("/dashboard");
@@ -82,7 +79,6 @@ export default function Otp() {
         {
           sessionId: camsData.sessionId,
           consentHandle: camsData.consentHandle,
-          token: camsData.token,
         }
       );
 

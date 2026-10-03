@@ -4,12 +4,12 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "npm --prefix backend start",
+    "test": "node --test",
+    "start": "npm run dev",
     "server": "npm --prefix backend run dev",
     "client": "npm --prefix frontend run dev",
     "build": "npm --prefix frontend run build",
-    "dev": "concurrently \"npm run server\" \"npm run client\""
+    "dev": "concurrently --kill-others-on-fail \"npm run server\" \"npm run client\""
   },
   "keywords": [],
   "author": "",

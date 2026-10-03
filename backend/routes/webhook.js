@@ -9,7 +9,7 @@ const getNotification = (body) =>
   body ||
   {};
 
-router.post("/cams", async (req, res) => {
+router.post("/", async (req, res) => {
   const body = req.body || {};
   const notification = getNotification(body);
   const clientTxnId =
@@ -20,25 +20,65 @@ router.post("/cams", async (req, res) => {
   const mappedSession = cams.findRedirectSession(clientTxnId);
   const consentStatus = cams.normalizeConsentStatus(notification.consentStatus);
 
+  console.info("[CAMS WEBHOOK RECEIVED]", {
+    clientTxnIdPresent: Boolean(clientTxnId),
+    sessionFound: Boolean(mappedSession),
+    consentStatus: consentStatus || null,
+    consentIdPresent: Boolean(notification.consentId),
+    consentHandlePresent: Boolean(notification.consentHandle),
+  });
+
   try {
-    if (!clientTxnId || !notification.consentStatus) {
+    if (
+      body.purpose !== "ConsentStatusNotification" ||
+      !clientTxnId ||
+      !body.txnid ||
+      !notification.consentStatus
+    ) {
       return res.status(400).json({
         success: false,
-        message: "clienttxnid and consentStatus are required",
+        message: "ConsentStatusNotification purpose, clienttxnid, txnid, and consentStatus are required",
       });
     }
 
-    if (!["ACTIVE", "REJECTED", "PAUSED", "REVOKED"].includes(consentStatus)) {
+    if (![
+      "ACTIVE",
+      "APPROVED",
+      "CONSENTED",
+      "AUTHORIZED",
+      "SUCCESS",
+      "COMPLETED",
+      "REJECTED",
+      "PAUSED",
+      "REVOKED",
+    ].includes(consentStatus)) {
       return res.status(400).json({
         success: false,
         message: `Unsupported consent status: ${consentStatus}`,
       });
     }
 
+    if (!mappedSession) {
+      return res.status(409).json({
+        success: false,
+        message: "CAMS session not found for consent notification",
+      });
+    }
+
+    if (
+      cams.isConsentStatusActive(consentStatus) &&
+      (!notification.consentId || !notification.consentHandle)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "ACTIVE consent notification requires consentId and consentHandle",
+      });
+    }
+
     const record = cams.saveConsentRecord({
       clientTxnId,
       clienttxnid: clientTxnId,
-      txnId: body.txnid || body.txnId,
+      txnId: body.txnid,
       consentId: notification.consentId,
       consentHandle: notification.consentHandle,
       consentStatus,
@@ -46,10 +86,9 @@ router.post("/cams", async (req, res) => {
       token: mappedSession?.token,
       customerId: body.customerId,
       fipid: body.fipid,
-      rawNotification: body,
     });
 
-    if (consentStatus === "ACTIVE" && record.consentId && record.token) {
+    if (cams.isConsentStatusActive(record.consentStatus) && record.consentId && record.token) {
       try {
         const consentDataResponse = await cams.getConsentData({
           token: record.token,
@@ -71,17 +110,17 @@ router.post("/cams", async (req, res) => {
     }
 
     console.info("[CAMS WEBHOOK]", {
-      clientTxnId,
+      clientTxnIdPresent: Boolean(clientTxnId),
       consentStatus,
-      consentId: record.consentId,
-      sessionId: record.sessionId,
+      consentIdPresent: Boolean(record.consentId),
+      sessionIdPresent: Boolean(record.sessionId),
     });
 
     return res.status(200).json({
       clienttxnid: clientTxnId,
       timestamp: new Date().toISOString(),
       result: "true",
-      message: "success",
+      Message: "success",
     });
   } catch (error) {
     console.error("[CAMS WEBHOOK ERROR]", error.message);

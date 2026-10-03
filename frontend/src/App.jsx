@@ -5,11 +5,12 @@ import {
   NavLink,
   useNavigate,
 } from "react-router-dom";
+import { LayoutDashboard, Landmark, LogOut, ShieldCheck } from "lucide-react";
 
 import EmployeeLogin from "./pages/EmployeeLogin";
 import Signup from "./pages/Signup";
 import Login from "./pages/login";
-import Cams from "./pages/Cams";
+import Cams from "./pages/cams";
 import Otp from "./pages/otp";
 import Dashboard from "./pages/Dashboard";
 import Banking from "./pages/Banking";
@@ -45,13 +46,18 @@ function ConsentProtected({ children }) {
 }
 
 /* =========================
-   Sidebar Layout
+  Finance Hub Navigation
 ========================= */
 function AppShell({ children }) {
   const navigate = useNavigate();
 
   const fullname =
     localStorage.getItem("fullname") || "Employee";
+  const displayName = fullname
+    .trim()
+    .split(/\s+/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
 
   const department =
     localStorage.getItem("department") || "Banking";
@@ -63,58 +69,65 @@ function AppShell({ children }) {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <header className="topbar">
         <div className="brand-block">
           <div className="brand-mark">L</div>
 
-          <div>
-            <p className="eyebrow">Labdhi Banking</p>
-            <h2>Finance Hub</h2>
+          <div className="brand-copy">
+            <span className="brand-name">Labdhi Banking</span>
+            <span className="brand-product">Finance Hub</span>
           </div>
         </div>
 
-        <nav className="sidebar-nav">
+        <nav className="topbar-nav" aria-label="Main navigation">
           <NavLink
             to="/dashboard"
             className={({ isActive }) =>
-              isActive ? "nav-item active" : "nav-item"
+              isActive ? "nav-link active" : "nav-link"
             }
           >
+            <LayoutDashboard size={17} strokeWidth={1.8} />
             Dashboard
           </NavLink>
 
           <NavLink
             to="/banking"
             className={({ isActive }) =>
-              isActive ? "nav-item active" : "nav-item"
+              isActive ? "nav-link active" : "nav-link"
             }
           >
+            <Landmark size={17} strokeWidth={1.8} />
             Banking
           </NavLink>
 
           <NavLink
             to="/insurance"
             className={({ isActive }) =>
-              isActive ? "nav-item active" : "nav-item"
+              isActive ? "nav-link active" : "nav-link"
             }
           >
+            <ShieldCheck size={17} strokeWidth={1.8} />
             Insurance
           </NavLink>
         </nav>
 
-        <div className="profile-card">
-          <span className="status-dot"></span>
-
-          <div>
-            <strong>{fullname}</strong>
-            <small>{department} Department</small>
+        <div className="topbar-account">
+          <div className="profile-card">
+            <span className="profile-avatar" aria-hidden="true">
+              {displayName.charAt(0).toUpperCase()}
+            </span>
+            <span className="profile-copy">
+              <strong>{displayName}</strong>
+              <small>{department}</small>
+            </span>
           </div>
-        </div>
 
-        <button className="logout-btn" onClick={logout}>
-          Logout
-        </button>
-      </aside>
+          <button className="topbar-logout" onClick={logout}>
+            <LogOut size={17} strokeWidth={1.8} />
+            <span>Logout</span>
+          </button>
+        </div>
+      </header>
 
       <main className="main-panel">{children}</main>
     </div>
@@ -174,11 +187,9 @@ export default function App() {
         path="/dashboard"
         element={
           <EmployeeProtected>
-            <ConsentProtected>
-              <AppShell>
-                <Dashboard />
-              </AppShell>
-            </ConsentProtected>
+            <AppShell>
+              <Dashboard />
+            </AppShell>
           </EmployeeProtected>
         }
       />

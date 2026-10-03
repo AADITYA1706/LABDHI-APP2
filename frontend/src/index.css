@@ -40,7 +40,7 @@ body,
 
 body{
   min-height:100vh;
-  background:linear-gradient(135deg,#eef5ff 0%,#f8fbff 55%,#ecfdf5 100%);
+  background:#f4f7fb;
   overflow-x:hidden;
 }
 

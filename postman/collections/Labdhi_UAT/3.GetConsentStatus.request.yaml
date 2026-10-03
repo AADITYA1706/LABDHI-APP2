@@ -1,0 +1,21 @@
+$kind: http-request
+url: https://uatapp.finduit.in/api/consent/GetConsentStatus
+method: POST
+headers:
+  Authorization: Bearer {{json_web_token_0nos}}
+  Content-Type: application/json
+body:
+  type: text
+  content: |-
+    {
+        "fiuID": "Labdhi_UAT",
+        "consentHandle": "3e41b701-1afb-426f-b6b0-820a7bdd5cd9",
+        "sessionId": "d9908b00-3ac5-4f8d-964b-7662bae28120",
+        "txnId":"3dcec8a1-8a70-4dde-b392-6bff045c97ff",
+        "userId": "kunalr@labdhi.in"
+    }
+auth:
+  type: bearer
+  credentials:
+    token: "{{auth_secret_0cj9}}"
+order: 5000

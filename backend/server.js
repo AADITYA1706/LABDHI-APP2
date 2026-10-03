@@ -52,7 +52,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/cams", camsRoutes);
 app.use("/api/consent", consentRoutes);
 app.use("/api/fetch", fetchRoutes);
-app.use("/webhook", webhookRoutes);
+app.use("/webhook/cams", webhookRoutes);
+app.use("/api/cams/webhook", webhookRoutes);
 app.use("/api/insurance", insuranceRoutes);
 
 // 404

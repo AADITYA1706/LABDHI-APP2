@@ -5,6 +5,23 @@ const db = require("../db");
 const cams = require("../services/cams");
 
 const router = express.Router();
+const dashboardDataInFlight = new Map();
+const dashboardVerificationInFlight = new Map();
+const dashboardFetchBlocks = new Map();
+const dashboardPartialDataCache = new Map();
+const dashboardCacheMaxAgeMs = 24 * 60 * 60 * 1000;
+
+const nextUtcMonthStart = () => {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString();
+};
+
+const dashboardArrays = (portfolio) => ({
+  accounts: Array.isArray(portfolio?.accounts) ? portfolio.accounts : [],
+  transactions: Array.isArray(portfolio?.transactions) ? portfolio.transactions : [],
+  dmat: Array.isArray(portfolio?.dmat) ? portfolio.dmat : [],
+  insurance: Array.isArray(portfolio?.insurance) ? portfolio.insurance : [],
+});
 
 const getCamsSession = (body) => {
   const sessionId = body?.sessionId;
@@ -93,68 +110,265 @@ router.post("/resend-otp", async (req, res) => {
   }
 });
 
-const firstArray = (payload, keys) => {
-  for (const key of keys) {
-    if (Array.isArray(payload?.[key])) return payload[key];
-  }
-
-  return [];
-};
-
 router.post("/dashboard-data", async (req, res) => {
+  let requestKey = "";
+  let activeConsentId = "";
+
   try {
     const sessionId = req.body?.sessionId;
     const savedSession = cams.getRedirectSession(sessionId);
-    const storedConsent =
+    let storedConsent =
       cams.findConsentRecordBySessionId(sessionId) ||
       cams.getConsentRecord({ consentId: req.body?.consentId });
-    const token = req.body?.token || storedConsent?.token || savedSession?.token;
-    const consentId = req.body?.consentId || storedConsent?.consentId;
+    const consentHandle =
+      req.body?.consentHandle ||
+      storedConsent?.consentHandle ||
+      savedSession?.consentHandle;
     const txnId = req.body?.txnId || storedConsent?.txnId || savedSession?.txnId;
 
-    if (!sessionId || !consentId || !token || !txnId) {
+    if (!sessionId || !consentHandle || !txnId) {
       return res.status(409).json({
         success: false,
         status: storedConsent?.consentStatus || "PENDING",
-        message: "Consent approval is required before loading dashboard data",
+        message: "An approved CAMS session is required before loading dashboard data",
       });
     }
 
-    const [consentResponse, periodicResponse] = await Promise.all([
-      cams.getConsentData({ token, consentId }),
-      cams.fetchPeriodicData({ token, sessionId, txnId, consentId }),
-    ]);
-    const consentData = cams.readPortfolio(consentResponse);
-    const periodicData = cams.readPortfolio(periodicResponse);
-    const portfolio = { ...consentData, periodicData };
+    const verificationKey = req.body?.consentId || `${sessionId}:${consentHandle}`;
+    let verificationPromise = dashboardVerificationInFlight.get(verificationKey);
+    if (!verificationPromise) {
+      verificationPromise = (async () => {
+        const authenticationResponse = await cams.authenticate();
+        const authentication = cams.readAuthentication(authenticationResponse);
+        if (!authentication.token) {
+          throw new Error("CAMS authentication did not return an access token");
+        }
 
-    cams.saveConsentRecord({
-      ...storedConsent,
-      sessionId,
-      consentId,
-      txnId,
-      token,
-      consentData: portfolio,
-      consentDataFetchedAt: new Date().toISOString(),
-    });
+        const statusResponse = await cams.getConsentStatus({
+          token: authentication.token,
+          sessionId,
+          consentHandle,
+          txnId,
+        });
 
-    return res.status(200).json({
-      success: true,
-      status: "ACTIVE",
-      data: {
-        accounts: firstArray(portfolio, ["accounts", "bankAccounts"]),
-        transactions: firstArray(portfolio, ["transactions", "recentTransactions"]),
-        dmat: firstArray(portfolio, ["dmat", "holdings", "demat"]),
-        insurance: firstArray(portfolio, ["insurance", "policies"]),
-        portfolio,
-      },
-    });
+        return {
+          authentication,
+          status: cams.readConsentStatus(statusResponse),
+        };
+      })();
+      dashboardVerificationInFlight.set(verificationKey, verificationPromise);
+    }
+
+    let verification;
+    try {
+      verification = await verificationPromise;
+    } finally {
+      if (dashboardVerificationInFlight.get(verificationKey) === verificationPromise) {
+        dashboardVerificationInFlight.delete(verificationKey);
+      }
+    }
+
+    const { authentication, status } = verification;
+    const notificationIsActive =
+      cams.isConsentStatusActive(storedConsent?.consentStatus) &&
+      Boolean(storedConsent?.consentId);
+    const consentIsActive =
+      cams.isConsentStatusActive(status.consentStatus) || notificationIsActive;
+    const consentId = status.consentId || (notificationIsActive ? storedConsent.consentId : "");
+    activeConsentId = consentId;
+
+    if (!consentIsActive || !consentId) {
+      return res.status(409).json({
+        success: false,
+        status: status.consentStatus || storedConsent?.consentStatus || "UNKNOWN",
+        message: consentIsActive
+          ? "CAMS confirmed consent, but did not return a consent ID"
+          : "CAMS consent is not active; dashboard data was not requested",
+      });
+    }
+
+    storedConsent =
+      storedConsent || cams.getConsentRecord({ consentId }) || {};
+    requestKey = consentId;
+
+    const cacheAge = Date.now() - Date.parse(storedConsent.dashboardDataFetchedAt || "");
+    if (
+      storedConsent.consentId === consentId &&
+      storedConsent.consentStatus === "ACTIVE" &&
+      storedConsent.consentData &&
+      Number.isFinite(cacheAge) &&
+      cacheAge >= 0 &&
+      cacheAge < dashboardCacheMaxAgeMs
+    ) {
+      console.info("[CAMS DASHBOARD DATA CACHE HIT]", {
+        sessionIdPresent: true,
+        consentIdPresent: true,
+        cacheAgeMs: cacheAge,
+      });
+      return res.status(200).json({
+        success: true,
+        status: "ACTIVE",
+        consentId,
+        data: {
+          ...dashboardArrays(storedConsent.consentData),
+          portfolio: storedConsent.consentData,
+        },
+      });
+    }
+
+    const fetchBlock = dashboardFetchBlocks.get(requestKey);
+    if (fetchBlock && Date.now() < Date.parse(fetchBlock.retryAfter)) {
+      let partialData =
+        dashboardPartialDataCache.get(consentId) || storedConsent.dashboardPartialData;
+      if (!partialData && storedConsent.consentData) {
+        partialData = cams.mapDashboardData(storedConsent.consentData, {});
+        dashboardPartialDataCache.set(consentId, partialData);
+        storedConsent = cams.saveConsentRecord({
+          ...storedConsent,
+          sessionId,
+          consentId,
+          consentStatus: "ACTIVE",
+          dashboardPartialData: partialData,
+        });
+      }
+
+      if (partialData) {
+        return res.status(200).json({
+          success: true,
+          status: "ACTIVE",
+          consentId,
+          partial: true,
+          warning: fetchBlock.message,
+          retryAfter: fetchBlock.retryAfter,
+          data: {
+            ...dashboardArrays(partialData),
+            portfolio: partialData,
+          },
+        });
+      }
+
+      return res.status(429).json({
+        success: false,
+        status: "ACTIVE",
+        message: fetchBlock.message,
+        retryAfter: fetchBlock.retryAfter,
+      });
+    }
+    if (fetchBlock) dashboardFetchBlocks.delete(requestKey);
+
+    let fetchPromise = dashboardDataInFlight.get(requestKey);
+    if (!fetchPromise) {
+      fetchPromise = (async () => {
+        const consentResponse = await cams.getConsentData({
+          token: authentication.token,
+          consentId,
+        });
+        const consentData = cams.readPortfolio(consentResponse);
+        let periodicResponse;
+        try {
+          periodicResponse = await cams.fetchPeriodicData({
+            token: authentication.token,
+            sessionId,
+            txnId,
+            consentId,
+          });
+        } catch (error) {
+          const message = error.response?.data?.message || error.message || "";
+          if (/data fetch count.*max limit|reached to max limit/i.test(message)) {
+            const partialData = cams.mapDashboardData(consentData, {});
+            dashboardPartialDataCache.set(consentId, partialData);
+            cams.saveConsentRecord({
+              ...storedConsent,
+              sessionId,
+              consentId,
+              txnId,
+              token: authentication.token,
+              consentStatus: "ACTIVE",
+              consentData: partialData,
+              dashboardPartialData: partialData,
+              consentDataFetchedAt: new Date().toISOString(),
+            });
+            error.dashboardPartialData = partialData;
+          }
+          throw error;
+        }
+        const periodicData = cams.readPortfolio(periodicResponse);
+        const mappedData = cams.mapDashboardData(consentData, periodicData);
+        const portfolio = mappedData;
+        dashboardPartialDataCache.delete(consentId);
+        const fetchedAt = new Date().toISOString();
+
+        cams.saveConsentRecord({
+          ...storedConsent,
+          sessionId,
+          consentId,
+          txnId,
+          token: authentication.token,
+          consentStatus: "ACTIVE",
+          consentData: portfolio,
+          consentDataFetchedAt: fetchedAt,
+          dashboardDataFetchedAt: fetchedAt,
+        });
+
+        return { mappedData, portfolio };
+      })().catch((error) => {
+        const message =
+          error.response?.data?.message || error.message || "Unable to load dashboard data";
+        if (/data fetch count.*max limit|reached to max limit/i.test(message)) {
+          dashboardFetchBlocks.set(requestKey, {
+            message,
+            retryAfter: nextUtcMonthStart(),
+          });
+        }
+        throw error;
+      });
+      dashboardDataInFlight.set(requestKey, fetchPromise);
+    }
+
+    try {
+      const { mappedData, portfolio } = await fetchPromise;
+      return res.status(200).json({
+        success: true,
+        status: "ACTIVE",
+        consentId,
+        partial: false,
+        data: {
+          ...mappedData,
+          portfolio,
+        },
+      });
+    } finally {
+      if (dashboardDataInFlight.get(requestKey) === fetchPromise) {
+        dashboardDataInFlight.delete(requestKey);
+      }
+    }
   } catch (err) {
-    console.error("DASHBOARD DATA ERROR", err.response?.data || err.message);
+    const message = err.response?.data?.message || err.message || "Unable to load dashboard data";
+    const fetchBlock = requestKey ? dashboardFetchBlocks.get(requestKey) : null;
+    console.error("DASHBOARD DATA ERROR", {
+      httpStatus: err.response?.status || null,
+      message,
+    });
+
+    if (err.dashboardPartialData) {
+      return res.status(200).json({
+        success: true,
+        status: "ACTIVE",
+        consentId: activeConsentId,
+        partial: true,
+        warning: message,
+        retryAfter: fetchBlock?.retryAfter || nextUtcMonthStart(),
+        data: {
+          ...dashboardArrays(err.dashboardPartialData),
+          portfolio: err.dashboardPartialData,
+        },
+      });
+    }
 
     return res.status(err.response?.status || 502).json({
       success: false,
-      message: err.response?.data?.message || err.message || "Unable to load dashboard data",
+      message,
+      ...(fetchBlock ? { retryAfter: fetchBlock.retryAfter } : {}),
     });
   }
 });

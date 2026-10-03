@@ -12,7 +12,6 @@ export default function Banking() {
       try {
         const sessionId = localStorage.getItem("sessionId");
         const consentId = localStorage.getItem("consentId");
-        const token = localStorage.getItem("camsToken");
         const txnId = localStorage.getItem("txnId");
 
         const res = await axios.post(
@@ -20,7 +19,6 @@ export default function Banking() {
           {
             sessionId,
             consentId,
-            token,
             txnId,
           }
         );

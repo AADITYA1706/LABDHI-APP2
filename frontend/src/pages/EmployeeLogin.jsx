@@ -49,7 +49,6 @@ export default function EmployeeLogin() {
       localStorage.removeItem("sessionId");
       localStorage.removeItem("consentId");
       localStorage.removeItem("consentHandle");
-      localStorage.removeItem("camsToken");
       localStorage.removeItem("camsData");
 
       navigate("/cams");

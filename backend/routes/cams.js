@@ -85,8 +85,8 @@ router.post("/redirect", async (req, res) => {
 
     const clientTxnId = crypto.randomUUID();
 
-    /* STEP 2 : RedirectAA */
-    const redirectRes = await cams.redirectAA({
+    /* STEP 2 : RedirectAA (refresh auth token on 401 and retry once) */
+    const redirectRes = await cams.redirectAAWithRetry({
       token: auth.token,
       sessionId: auth.sessionId,
       mobile,
@@ -98,11 +98,16 @@ router.post("/redirect", async (req, res) => {
     });
 
     const redirect = cams.readRedirect(redirectRes);
+    const sessionId = redirect.sessionId;
+
+    if (!sessionId) {
+      throw new Error("RedirectAA response did not include required sessionId");
+    }
 
     /* SAVE SESSION */
-    cams.rememberRedirectSession(auth.sessionId, {
+    cams.rememberRedirectSession(sessionId, {
       token: auth.token,
-      sessionId: auth.sessionId,
+      sessionId,
       mobile,
       clientTxnId,
       clienttxnid: clientTxnId,
@@ -113,11 +118,11 @@ router.post("/redirect", async (req, res) => {
     });
 
     const sessionDiagnostics = cams.getRedirectSessionDiagnostics(
-      auth.sessionId,
+      sessionId,
       clientTxnId
     );
     console.info("[CAMS SESSION CREATED]", {
-      sessionIdExists: Boolean(auth.sessionId),
+      sessionIdExists: Boolean(sessionId),
       clientTxnIdExists: Boolean(clientTxnId),
       consentHandleExists: Boolean(redirect.consentHandle),
       sessionFound: sessionDiagnostics.sessionFound,
@@ -128,8 +133,7 @@ router.post("/redirect", async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      token: auth.token,
-      sessionId: auth.sessionId,
+      sessionId,
       consentHandle: redirect.consentHandle,
       txnId: redirect.txnId,
       clienttxnid: clientTxnId,
@@ -165,6 +169,18 @@ router.post("/redirect", async (req, res) => {
 router.post("/callback", async (req, res) => {
   const callbackDiagnostics = {
     sessionFound: false,
+    sessionIdPresent: false,
+    callbackParameters: {
+      ecresPresent: false,
+      resdatePresent: false,
+      clientTxnIdPresent: false,
+      consentHandlePresent: false,
+      txnIdPresent: false,
+    },
+    upstreamStatusResponseStatus: null,
+    statusResponseStatus: null,
+    consentStatus: null,
+    consentIdPresent: false,
     consentActive: false,
     getConsentDataSucceeded: false,
     fetchPeriodicDataSucceeded: false,
@@ -217,6 +233,14 @@ router.post("/callback", async (req, res) => {
     const mapped = cams.findRedirectSession(clientTxnId);
 
     const sessionId = mapped?.sessionId || body.sessionId;
+    callbackDiagnostics.sessionIdPresent = Boolean(sessionId);
+    callbackDiagnostics.callbackParameters = {
+      ecresPresent: Boolean(ecres),
+      resdatePresent: Boolean(resdate),
+      clientTxnIdPresent: Boolean(clientTxnId),
+      consentHandlePresent: Boolean(body.consentHandle || mapped?.consentHandle),
+      txnIdPresent: Boolean(body.txnId || mapped?.txnId),
+    };
     const inMemorySession = cams.getRedirectSession(sessionId);
     const suppliedSession =
       body.sessionId && body.token && body.consentHandle && body.txnId
@@ -248,10 +272,13 @@ router.post("/callback", async (req, res) => {
     });
 
     const status = cams.readConsentStatus(statusRes);
-    callbackDiagnostics.consentActive =
-      String(status.consentStatus).toUpperCase() === "ACTIVE";
+    callbackDiagnostics.upstreamStatusResponseStatus = statusRes.status || null;
+    callbackDiagnostics.consentStatus = status.consentStatus || null;
+    callbackDiagnostics.consentIdPresent = Boolean(status.consentId);
+    callbackDiagnostics.consentActive = cams.isConsentStatusActive(status.consentStatus);
 
     if (!callbackDiagnostics.consentActive) {
+      callbackDiagnostics.statusResponseStatus = 200;
       logCallbackDiagnostics();
       return res.status(200).json({
         success: false,
@@ -291,6 +318,7 @@ router.post("/callback", async (req, res) => {
       consentData: portfolio,
     });
     callbackDiagnostics.portfolioFetched = true;
+    callbackDiagnostics.statusResponseStatus = 200;
     logCallbackDiagnostics();
 
     return res.status(200).json({
@@ -304,6 +332,7 @@ router.post("/callback", async (req, res) => {
       portfolio,
     });
   } catch (err) {
+    callbackDiagnostics.statusResponseStatus = err.response?.status || 502;
     logCallbackDiagnostics();
     console.error("\n========== CAMS CALLBACK ERROR ==========");
     console.error(
@@ -328,8 +357,10 @@ router.post("/callback", async (req, res) => {
 router.post("/fetch", async (req, res) => {
   try {
     const { sessionId, consentId, token, txnId } = req.body;
+    const saved = sessionId ? cams.getRedirectSession(sessionId) : null;
+    const resolvedToken = saved?.token || token;
 
-    if (!sessionId || !consentId || !token || !txnId) {
+    if (!sessionId || !consentId || !resolvedToken || !txnId) {
       return res.status(400).json({
         success: false,
         message: "Missing required fields",
@@ -337,9 +368,9 @@ router.post("/fetch", async (req, res) => {
     }
 
     const [consentData, periodicData] = await Promise.all([
-      cams.getConsentData({ token, consentId }),
+      cams.getConsentData({ token: resolvedToken, consentId }),
       cams.fetchPeriodicData({
-        token,
+        token: resolvedToken,
         sessionId,
         txnId,
         consentId,
@@ -374,6 +405,12 @@ router.post("/fetch", async (req, res) => {
 router.post("/status", async (req, res) => {
   const statusDiagnostics = {
     sessionFound: false,
+    sessionIdPresent: Boolean(req.body.sessionId),
+    statusSource: null,
+    statusResponseStatus: null,
+    upstreamStatusResponseStatus: null,
+    consentStatus: null,
+    consentIdPresent: false,
     consentActive: false,
     getConsentDataSucceeded: false,
     fetchPeriodicDataSucceeded: false,
@@ -387,6 +424,7 @@ router.post("/status", async (req, res) => {
     statusDiagnostics.sessionFound = Boolean(saved);
 
     if (!saved) {
+      statusDiagnostics.statusResponseStatus = 400;
       logStatusDiagnostics();
       return res.status(400).json({
         success: false,
@@ -394,16 +432,43 @@ router.post("/status", async (req, res) => {
       });
     }
 
+    const notification = cams.findConsentRecordBySessionId(saved.sessionId);
+    const notificationStatus = cams.normalizeConsentStatus(
+      notification?.consentStatus
+    );
+
+    if (cams.isConsentStatusActive(notification?.consentStatus) && notification?.consentId) {
+      statusDiagnostics.statusSource = "ConsentStatusNotification";
+      statusDiagnostics.statusResponseStatus = 200;
+      statusDiagnostics.consentStatus = notificationStatus;
+      statusDiagnostics.consentIdPresent = true;
+      statusDiagnostics.consentActive = true;
+      logStatusDiagnostics();
+
+      return res.status(200).json({
+        success: true,
+        consentStatus: notificationStatus,
+        consentId: notification.consentId,
+        consentHandle: notification.consentHandle || saved.consentHandle,
+        sessionId: saved.sessionId,
+        txnId: notification.txnId || saved.txnId,
+      });
+    }
+
     const response = await cams.getConsentStatus({
-      token: req.body.token || saved.token,
+      token: saved.token || req.body.token,
       sessionId: saved.sessionId,
       consentHandle: req.body.consentHandle || saved.consentHandle,
       txnId: req.body.txnId || saved.txnId,
     });
 
     const consent = cams.readConsentStatus(response);
-    statusDiagnostics.consentActive =
-      String(consent.consentStatus).toUpperCase() === "ACTIVE";
+    statusDiagnostics.statusSource = "GetConsentStatus";
+    statusDiagnostics.statusResponseStatus = 200;
+    statusDiagnostics.upstreamStatusResponseStatus = response.status || null;
+    statusDiagnostics.consentStatus = consent.consentStatus || null;
+    statusDiagnostics.consentIdPresent = Boolean(consent.consentId);
+    statusDiagnostics.consentActive = cams.isConsentStatusActive(consent.consentStatus);
     logStatusDiagnostics();
 
     return res.status(200).json({
@@ -415,17 +480,118 @@ router.post("/status", async (req, res) => {
       data: cams.readPayload(response),
     });
   } catch (err) {
+    statusDiagnostics.statusResponseStatus = err.response?.status || 502;
+    statusDiagnostics.upstreamStatusResponseStatus = err.response?.status || null;
     logStatusDiagnostics();
-    console.error("STATUS ERROR");
-    console.error(
-      err.response?.data
-        ? cams.redactSecrets(err.response.data)
-        : err.message
+    const upstreamStatus = Number.isInteger(err.response?.status)
+      ? err.response.status
+      : null;
+    const errorCode = [
+      "ECONNABORTED",
+      "ETIMEDOUT",
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "ENOTFOUND",
+      "EAI_AGAIN",
+    ].includes(err.code)
+      ? err.code
+      : null;
+    const failureSource = upstreamStatus !== null
+      ? "cams_response"
+      : ["ECONNABORTED", "ETIMEDOUT"].includes(err.code)
+        ? "timeout"
+        : err.isAxiosError
+          ? "axios_network"
+          : "local_processing";
+    const errorType = [
+      "Error",
+      "TypeError",
+      "ReferenceError",
+      "RangeError",
+      "SyntaxError",
+      "AxiosError",
+      "CanceledError",
+    ].includes(err.name)
+      ? err.name
+      : "OtherError";
+    const responseBody = err.response?.data;
+    const responseObjects = [
+      responseBody,
+      responseBody?.data,
+    ].filter((value) => value && typeof value === "object" && !Array.isArray(value));
+    const responseFieldNames = [
+      ...new Set(
+        responseObjects
+          .flatMap((value) => Object.keys(value))
+          .filter((name) => /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name))
+      ),
+    ].slice(0, 30);
+    const responseStatusValue =
+      responseBody?.consentStatus ||
+      responseBody?.status ||
+      responseBody?.data?.consentStatus ||
+      responseBody?.data?.status;
+    const safeCamsStatuses = new Set([
+      "ACTIVE",
+      "PENDING",
+      "REJECTED",
+      "PAUSED",
+      "REVOKED",
+      "EXPIRED",
+      "FAILED",
+      "FAILURE",
+      "ERROR",
+      "INACTIVE",
+      "UNKNOWN",
+      "APPROVED",
+      "CANCELLED",
+      "CANCELED",
+      "NOT_FOUND",
+      "INVALID",
+    ]);
+    const normalizedResponseStatus = typeof responseStatusValue === "string"
+      ? responseStatusValue.trim().toUpperCase()
+      : "";
+    const camsResponseStatus = safeCamsStatuses.has(normalizedResponseStatus)
+      ? normalizedResponseStatus
+      : null;
+    const missingValue = /^Missing CAMS value: (sessionId|consentHandle|txnId)$/.exec(
+      String(err.message || "")
+    );
+    const safeMessage = upstreamStatus !== null
+      ? `CAMS returned HTTP ${upstreamStatus}`
+      : failureSource === "timeout"
+        ? "CAMS status request timed out"
+        : failureSource === "axios_network"
+          ? `CAMS status request failed before a response${errorCode ? ` (${errorCode})` : ""}`
+          : missingValue
+            ? `Missing required CAMS value: ${missingValue[1]}`
+            : "Local CAMS status processing failed";
+    const responseHttpStatus = upstreamStatus ?? (
+      failureSource === "local_processing"
+        ? 500
+        : failureSource === "timeout"
+          ? 504
+          : 502
     );
 
-    return res.status(502).json({
+    console.error("[CAMS STATUS DIAGNOSTIC]", {
+      errorType,
+      upstreamStatus,
+      camsResponseStatus,
+      responseFieldNames,
+      safeMessage,
+      failureSource,
+      errorCode,
+    });
+
+    return res.status(responseHttpStatus).json({
       success: false,
-      message: err.message,
+      error: "CAMS_STATUS_CHECK_FAILED",
+      upstreamStatus,
+      camsResponseStatus,
+      failureSource,
+      message: safeMessage,
     });
   }
 });
