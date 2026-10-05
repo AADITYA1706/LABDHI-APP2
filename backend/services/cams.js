@@ -957,17 +957,16 @@ const getConsentData = async ({ token, consentId, sessionId }) => {
 };
 
 const fetchPeriodicData = async ({ token, sessionId, consentId }) => {
-  const txnId = crypto.randomUUID();
+  return retryWithFreshToken(token, async (activeToken) => {
+    const txnId = crypto.randomUUID();
+    const context = { sessionId, consentId, txnId };
+    console.info("[CAMS PERIODIC FETCH]", {
+      txnIdPresent: Boolean(txnId),
+      sessionIdPresent: Boolean(sessionId),
+      consentIdPresent: Boolean(consentId),
+    });
 
-  const context = { sessionId, consentId, txnId };
-  console.info("[CAMS PERIODIC FETCH]", {
-    txnIdPresent: Boolean(txnId),
-    sessionIdPresent: Boolean(sessionId),
-    consentIdPresent: Boolean(consentId),
-  });
-
-  const response = await retryWithFreshToken(token, async (activeToken) =>
-    post(
+    const response = await post(
       "/api/FIData/v2/FetchPeriodicData",
       {
         sessionId: requireValue("sessionId", sessionId),
@@ -977,10 +976,10 @@ const fetchPeriodicData = async ({ token, sessionId, consentId }) => {
       },
       activeToken,
       context
-    )
-  );
-  logDataResponseShape("FETCH PERIODIC DATA", response, context);
-  return response;
+    );
+    logDataResponseShape("FETCH PERIODIC DATA", response, context);
+    return response;
+  });
 };
 
 const fetchActiveConsentData = async ({ sessionId, consentId }) => {
