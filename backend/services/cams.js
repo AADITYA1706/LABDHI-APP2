@@ -1,5 +1,7 @@
 const crypto = require("crypto");
 const axios = require("axios");
+const { recordCamsDiagnostic } = require("./camsDiagnostics");
+const camsSessionStore = require("./camsSessionStore");
 
 const requiredEnvironment = [
   "CAMS_BASE_URL",
@@ -15,12 +17,33 @@ const getUserId = () => process.env.CAMS_USER_ID;
 const redirectSessions = new Map();
 const consentRecords = new Map();
 
-const rememberRedirectSession = (sessionId, values) => {
+const initializeRedirectSessions = async () => {
+  const savedSessions = await camsSessionStore.loadRedirectSessions();
+  for (const session of savedSessions) {
+    redirectSessions.set(session.sessionId, session);
+  }
+
+  console.info("[CAMS SESSION STORE READY]", { restoredSessionCount: savedSessions.length });
+  return savedSessions.length;
+};
+
+const rememberRedirectSession = async (sessionId, values) => {
   const createdAt = Date.now();
-  redirectSessions.set(sessionId, {
+  const session = {
     ...values,
     createdAt,
     expiresAt: createdAt + 15 * 60 * 1000,
+  };
+
+  await camsSessionStore.saveRedirectSession(session);
+  redirectSessions.set(sessionId, session);
+  return session;
+};
+
+const removeExpiredRedirectSession = (sessionId) => {
+  redirectSessions.delete(sessionId);
+  void camsSessionStore.deleteRedirectSession(sessionId).catch((error) => {
+    console.error("[CAMS SESSION EXPIRY CLEANUP FAILED]", error.code || "UNKNOWN");
   });
 };
 
@@ -28,7 +51,7 @@ const getRedirectSession = (sessionId) => {
   const session = redirectSessions.get(sessionId);
 
   if (!session || session.expiresAt < Date.now()) {
-    redirectSessions.delete(sessionId);
+    if (session) removeExpiredRedirectSession(sessionId);
     return null;
   }
 
@@ -44,6 +67,7 @@ const findRedirectSession = (clientTxnId) => {
       session.clienttrnxid === clientTxnId
     ) {
       if (session.expiresAt >= Date.now()) return session;
+      removeExpiredRedirectSession(session.sessionId);
     }
   }
 
@@ -423,7 +447,7 @@ const mapDashboardData = (consentData, periodicData) => {
   return { accounts, transactions, dmat, insurance };
 };
 
-const logDataResponseShape = (operation, response) => {
+const logDataResponseShape = (operation, response, context = {}) => {
   const payload = response?.data;
   const topLevelKeys =
     payload && typeof payload === "object" && !Array.isArray(payload)
@@ -455,12 +479,33 @@ const logDataResponseShape = (operation, response) => {
   };
 
   inspect(payload);
-  console.info(`[CAMS ${operation} RESPONSE SHAPE]`, {
+  const details = {
     httpStatus: Number.isInteger(response?.status) ? response.status : null,
+    sessionId: context.sessionId || null,
+    consentId: context.consentId || null,
+    txnId: context.txnId || null,
     topLevelKeys,
     nestedKeys,
     nestedArrays,
+    consentStatus: context.consentStatus,
+    consentActive: context.consentActive,
+  };
+  console.info(`[CAMS ${operation} RESPONSE SHAPE]`, {
+    httpStatus: details.httpStatus,
+    topLevelKeys: details.topLevelKeys,
+    nestedKeys: details.nestedKeys,
+    nestedArrays: details.nestedArrays,
   });
+
+  const normalizedOperation = operation.toLowerCase().replace(/[^a-z]/g, "");
+  const event = normalizedOperation.includes("getconsentdata")
+    ? "GET_CONSENT_DATA"
+    : normalizedOperation.includes("fetchperiodicdata")
+      ? "FETCH_PERIODIC_DATA"
+      : normalizedOperation.includes("consent verification")
+        ? "CONSENT_VERIFICATION"
+        : "CAMS_DATA_RESPONSE";
+  recordCamsDiagnostic(event, details);
 };
 
 const firstValue = (value, keys) =>
@@ -484,7 +529,7 @@ const normalizeConsentHandle = (value) => {
   return candidates[0] || text;
 };
 
-const post = async (path, body, token) => {
+const post = async (path, body, token, diagnosticContext = {}) => {
   assertConfiguration();
 
   try {
@@ -499,7 +544,7 @@ const post = async (path, body, token) => {
       path === "/api/fidata/GetConsentData" ||
       path === "/api/FIData/v2/FetchPeriodicData"
     ) {
-      logDataResponseShape(path, error.response);
+      logDataResponseShape(path, error.response, diagnosticContext);
       console.error(`[CAMS ${path} ERROR]`, {
         httpStatus: error.response?.status || null,
         message: error.message,
@@ -876,17 +921,26 @@ const getConsentStatus = async ({ token, sessionId, consentHandle, txnId }) => {
         txnId: requireValue("txnId", txnId),
         userId: getUserId(),
       },
-      activeToken
+      activeToken,
+      { sessionId, txnId }
     );
 
     logConsentStatusResponseShape(result);
+    const consent = readConsentStatus(result);
+    logDataResponseShape("CONSENT VERIFICATION", result, {
+      sessionId,
+      consentId: consent.consentId,
+      txnId,
+      consentStatus: consent.consentStatus,
+      consentActive: isConsentStatusActive(consent.consentStatus),
+    });
     return result;
   });
 
   return response;
 };
 
-const getConsentData = async ({ token, consentId }) => {
+const getConsentData = async ({ token, consentId, sessionId }) => {
   const response = await retryWithFreshToken(token, async (activeToken) =>
     post(
       "/api/fidata/GetConsentData",
@@ -894,18 +948,20 @@ const getConsentData = async ({ token, consentId }) => {
         consentId: requireValue("consentId", consentId),
         fiuID: getFiuId(),
       },
-      activeToken
+      activeToken,
+      { sessionId, consentId }
     )
   );
-  logDataResponseShape("GET CONSENT DATA", response);
+  logDataResponseShape("GET CONSENT DATA", response, { sessionId, consentId });
   return response;
 };
 
 const fetchPeriodicData = async ({ token, sessionId, consentId }) => {
   const txnId = crypto.randomUUID();
 
+  const context = { sessionId, consentId, txnId };
   console.info("[CAMS PERIODIC FETCH]", {
-    txnId,
+    txnIdPresent: Boolean(txnId),
     sessionIdPresent: Boolean(sessionId),
     consentIdPresent: Boolean(consentId),
   });
@@ -919,10 +975,11 @@ const fetchPeriodicData = async ({ token, sessionId, consentId }) => {
         consentId: requireValue("consentId", consentId),
         fiuID: getFiuId(),
       },
-      activeToken
+      activeToken,
+      context
     )
   );
-  logDataResponseShape("FETCH PERIODIC DATA", response);
+  logDataResponseShape("FETCH PERIODIC DATA", response, context);
   return response;
 };
 
@@ -1009,6 +1066,7 @@ module.exports = {
   getConsentData,
   fetchPeriodicData,
   fetchActiveConsentData,
+  initializeRedirectSessions,
   rememberRedirectSession,
   getRedirectSession,
   findRedirectSession,

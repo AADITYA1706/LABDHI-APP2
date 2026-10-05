@@ -1,4 +1,5 @@
 node_modules/
 frontend/dist/
 backend/data/users.json
+/backend/logs/
 .env

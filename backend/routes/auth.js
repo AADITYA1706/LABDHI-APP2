@@ -3,6 +3,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const db = require("../db");
 const cams = require("../services/cams");
+const { recordCamsDiagnostic } = require("../services/camsDiagnostics");
 
 const router = express.Router();
 const dashboardDataInFlight = new Map();
@@ -92,7 +93,7 @@ router.post("/resend-otp", async (req, res) => {
       txnId: redirect.txnId,
     };
 
-    cams.rememberRedirectSession(session.sessionId, updatedSession);
+    await cams.rememberRedirectSession(session.sessionId, updatedSession);
 
     return res.status(200).json({
       success: true,
@@ -121,10 +122,10 @@ router.post("/dashboard-data", async (req, res) => {
       cams.findConsentRecordBySessionId(sessionId) ||
       cams.getConsentRecord({ consentId: req.body?.consentId });
     const consentHandle =
-      req.body?.consentHandle ||
+      savedSession?.consentHandle ||
       storedConsent?.consentHandle ||
-      savedSession?.consentHandle;
-    const txnId = req.body?.txnId || storedConsent?.txnId || savedSession?.txnId;
+      req.body?.consentHandle;
+    const txnId = savedSession?.txnId || storedConsent?.txnId || req.body?.txnId;
 
     if (!sessionId || !consentHandle || !txnId) {
       return res.status(409).json({
@@ -133,6 +134,22 @@ router.post("/dashboard-data", async (req, res) => {
         message: "An approved CAMS session is required before loading dashboard data",
       });
     }
+
+    const fetchContext = {
+      sessionId,
+      requestedConsentId: req.body?.consentId || null,
+      txnId,
+      sessionFound: Boolean(savedSession),
+      sessionIdMatches: savedSession?.sessionId === sessionId,
+      consentHandleFromServerSession: Boolean(savedSession?.consentHandle),
+      txnIdFromServerSession: Boolean(savedSession?.txnId),
+      consentRecordFound: Boolean(storedConsent),
+      consentRecordSessionId: storedConsent?.sessionId || null,
+      consentRecordConsentId: storedConsent?.consentId || null,
+      consentRecordStatus: storedConsent?.consentStatus || null,
+      consentRecordHasData: Boolean(storedConsent?.consentData),
+    };
+    recordCamsDiagnostic("DASHBOARD_FETCH_CONTEXT", fetchContext);
 
     const verificationKey = req.body?.consentId || `${sessionId}:${consentHandle}`;
     let verificationPromise = dashboardVerificationInFlight.get(verificationKey);
@@ -154,6 +171,7 @@ router.post("/dashboard-data", async (req, res) => {
         return {
           authentication,
           status: cams.readConsentStatus(statusResponse),
+          statusHttpStatus: statusResponse.status,
         };
       })();
       dashboardVerificationInFlight.set(verificationKey, verificationPromise);
@@ -168,7 +186,7 @@ router.post("/dashboard-data", async (req, res) => {
       }
     }
 
-    const { authentication, status } = verification;
+    const { authentication, status, statusHttpStatus } = verification;
     const notificationIsActive =
       cams.isConsentStatusActive(storedConsent?.consentStatus) &&
       Boolean(storedConsent?.consentId);
@@ -176,6 +194,22 @@ router.post("/dashboard-data", async (req, res) => {
       cams.isConsentStatusActive(status.consentStatus) || notificationIsActive;
     const consentId = status.consentId || (notificationIsActive ? storedConsent.consentId : "");
     activeConsentId = consentId;
+
+    const verificationDetails = {
+      sessionId,
+      txnId,
+      httpStatus: statusHttpStatus,
+      consentId,
+      consentStatus: status.consentStatus || null,
+      responseConsentId: status.consentId || null,
+      notificationConsentId: notificationIsActive ? storedConsent.consentId : null,
+      activeConsentId: consentId || null,
+      consentIsActive,
+    };
+    recordCamsDiagnostic("CONSENT_VERIFIED", {
+      ...verificationDetails,
+      consentActive: consentIsActive,
+    });
 
     if (!consentIsActive || !consentId) {
       return res.status(409).json({
@@ -200,10 +234,13 @@ router.post("/dashboard-data", async (req, res) => {
       cacheAge >= 0 &&
       cacheAge < dashboardCacheMaxAgeMs
     ) {
-      console.info("[CAMS DASHBOARD DATA CACHE HIT]", {
-        sessionIdPresent: true,
-        consentIdPresent: true,
-        cacheAgeMs: cacheAge,
+      const cachedData = dashboardArrays(storedConsent.consentData);
+      recordCamsDiagnostic("DASHBOARD_CACHE_HIT", {
+        sessionId,
+        consentId,
+        accountCount: cachedData.accounts.length,
+        transactionCount: cachedData.transactions.length,
+        storedSessionMatches: storedConsent.sessionId === sessionId,
       });
       return res.status(200).json({
         success: true,
@@ -233,6 +270,12 @@ router.post("/dashboard-data", async (req, res) => {
       }
 
       if (partialData) {
+        recordCamsDiagnostic("DASHBOARD_PARTIAL_CACHE_RESPONSE", {
+          sessionId,
+          consentId,
+          accountCount: partialData.accounts?.length || 0,
+          transactionCount: partialData.transactions?.length || 0,
+        });
         return res.status(200).json({
           success: true,
           status: "ACTIVE",
@@ -262,6 +305,8 @@ router.post("/dashboard-data", async (req, res) => {
         const consentResponse = await cams.getConsentData({
           token: authentication.token,
           consentId,
+          sessionId,
+          txnId,
         });
         const consentData = cams.readPortfolio(consentResponse);
         let periodicResponse;
@@ -298,7 +343,7 @@ router.post("/dashboard-data", async (req, res) => {
         dashboardPartialDataCache.delete(consentId);
         const fetchedAt = new Date().toISOString();
 
-        cams.saveConsentRecord({
+        const savedRecord = cams.saveConsentRecord({
           ...storedConsent,
           sessionId,
           consentId,
@@ -308,6 +353,19 @@ router.post("/dashboard-data", async (req, res) => {
           consentData: portfolio,
           consentDataFetchedAt: fetchedAt,
           dashboardDataFetchedAt: fetchedAt,
+        });
+
+        recordCamsDiagnostic("DASHBOARD_DATA_STORED", {
+          httpStatus: 200,
+          sessionId,
+          consentId,
+          txnId,
+          accountCount: mappedData.accounts.length,
+          transactionCount: mappedData.transactions.length,
+          dmatCount: mappedData.dmat.length,
+          insuranceCount: mappedData.insurance.length,
+          storedSessionMatches: savedRecord.sessionId === sessionId,
+          consentStatus: savedRecord.consentStatus,
         });
 
         return { mappedData, portfolio };
@@ -327,6 +385,17 @@ router.post("/dashboard-data", async (req, res) => {
 
     try {
       const { mappedData, portfolio } = await fetchPromise;
+      recordCamsDiagnostic("DASHBOARD_RESPONSE", {
+        httpStatus: 200,
+        sessionId,
+        consentId,
+        txnId,
+        accountCount: mappedData.accounts.length,
+        transactionCount: mappedData.transactions.length,
+        dmatCount: mappedData.dmat.length,
+        insuranceCount: mappedData.insurance.length,
+        consentStatus: "ACTIVE",
+      });
       return res.status(200).json({
         success: true,
         status: "ACTIVE",
@@ -351,6 +420,11 @@ router.post("/dashboard-data", async (req, res) => {
     });
 
     if (err.dashboardPartialData) {
+      recordCamsDiagnostic("DASHBOARD_PARTIAL_RESPONSE", {
+        consentId: activeConsentId,
+        accountCount: err.dashboardPartialData.accounts?.length || 0,
+        transactionCount: err.dashboardPartialData.transactions?.length || 0,
+      });
       return res.status(200).json({
         success: true,
         status: "ACTIVE",

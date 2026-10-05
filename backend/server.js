@@ -17,6 +17,7 @@ const consentRoutes = require("./routes/consent");
 const fetchRoutes = require("./routes/fetch");
 const webhookRoutes = require("./routes/webhook");
 const insuranceRoutes = require("./routes/insurance");
+const cams = require("./services/cams");
 
 // Middleware
 app.use(cors());
@@ -65,7 +66,14 @@ app.use((req, res) => {
   });
 });
 
-// Start Server
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+const startServer = async () => {
+  await cams.initializeRedirectSessions();
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
+  });
+};
+
+startServer().catch((error) => {
+  console.error("[SERVER STARTUP FAILED]", error.message);
+  process.exitCode = 1;
 });

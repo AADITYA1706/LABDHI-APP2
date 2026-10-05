@@ -1,6 +1,7 @@
 const express = require("express");
 const crypto = require("crypto");
 const cams = require("../services/cams");
+const { recordCamsDiagnostic } = require("../services/camsDiagnostics");
 
 const router = express.Router();
 
@@ -44,6 +45,10 @@ router.post("/redirect", async (req, res) => {
     const requestedRedirectUrl = String(
       req.body.redirecturl || req.body.redirectUrl || ""
     ).trim();
+    recordCamsDiagnostic("REDIRECTAA_REQUEST_RECEIVED", {
+      mobilePresent: Boolean(mobile),
+      redirectUrlPresent: Boolean(requestedRedirectUrl),
+    });
     const normalizedRegisteredRedirectUrl = normalizeRedirectUrl(
       registeredRedirectUrl
     );
@@ -99,13 +104,21 @@ router.post("/redirect", async (req, res) => {
 
     const redirect = cams.readRedirect(redirectRes);
     const sessionId = redirect.sessionId;
+    recordCamsDiagnostic("REDIRECTAA_RESPONSE_PARSED", {
+      httpStatus: redirectRes.status,
+      sessionId,
+      txnId: redirect.txnId,
+      redirectResponseSessionIdPresent: Boolean(sessionId),
+      consentHandlePresent: Boolean(redirect.consentHandle),
+      redirectTxnIdPresent: Boolean(redirect.txnId),
+    });
 
     if (!sessionId) {
       throw new Error("RedirectAA response did not include required sessionId");
     }
 
     /* SAVE SESSION */
-    cams.rememberRedirectSession(sessionId, {
+    await cams.rememberRedirectSession(sessionId, {
       token: auth.token,
       sessionId,
       mobile,
